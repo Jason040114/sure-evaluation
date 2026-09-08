@@ -9,11 +9,14 @@ from the concrete `pipeline_id`. Generated descriptions also expose relative
 `task_config_path` / `route_config_path`, `script_entrypoint`, and `executor`
 fields so users and agents can trace a route back to implementation code.
 
-For a machine-readable catalog of every metric → pipeline → node mapping, see [Pipeline Catalog](../pipeline_catalog.md).
+Use `sure-eval metric routes <task> ...` for live route discovery. For the
+committed machine-readable inventory of registered atomic routes and curated
+multi-metric bundles, see [Pipeline Catalog](../pipeline_catalog.md).
 
 - [ASR — Automatic Speech Recognition](./asr.md)
 - [S2TT — Speech-to-Text Translation](./s2tt.md)
 - [SD — Speaker Diarization](./sd.md)
+- [SV — Speaker Verification](./sv.md)
 - [SA-ASR — Speaker-Aware ASR](./sa_asr.md)
 - [TTS — Text-to-Speech](./tts.md)
 - [VC — Voice Conversion](./vc.md)
