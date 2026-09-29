@@ -88,6 +88,7 @@ EQUIVALENT_PAIRS = [
     ("I'm sure you're right", "im sure youre right"),
     ("it's fine", "its fine"),                       # 's collapsed, not expanded
     ("john's report is ready", "johns report is ready"),
+    ("THAT'S THE STORY'S END", "That's the story's end"),  # 's collapse is case-insensitive
     ("we need to produce it", "we needto produce it"),   # spacing repair (hyp glue)
     ("something great happened", "some thing great happened"),  # reverse split
     ("um okay that works", "okay that works"),       # spoken filler dropped
