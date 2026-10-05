@@ -38,7 +38,7 @@ default_pipelines:
       variants:
         wetext_norm_zh_itn: asr.zh.cer.wetext_norm_zh_itn_v1.wenet_cer_v1
         aispeech_norm_zh: asr.zh.cer.aispeech_norm_zh_v1.wenet_cer_v1
-        canonical_itn_zh: asr.zh.cer.canonical_itn_zh_v1.token_cer_v1
+        canonical_itn_zh: asr.zh.cer.canonical_itn_zh_v2.token_cer_v1
         giga_norm_chn: asr.zh.cer.giga_norm_chn_v1.wenet_cer_v1
   en:
     wer:
@@ -46,14 +46,14 @@ default_pipelines:
       variants:
         whisper_norm_english: asr.en.wer.whisper_norm_english_v1.wenet_wer_v1
         aispeech_norm_en: asr.en.wer.aispeech_norm_en_v1.wenet_wer_v1
-        canonical_itn_en: asr.en.wer.canonical_itn_en_v1.token_mer_v1
+        canonical_itn_en: asr.en.wer.canonical_itn_en_v2.token_mer_v1
         giga_norm_usa: asr.en.wer.giga_norm_usa_v1.wenet_wer_v1
   cs:
     mer:
       default: asr.cs.mer.aispeech_norm_cs_v1.wenet_mer_v1
       variants:
         aispeech_norm_cs: asr.cs.mer.aispeech_norm_cs_v1.wenet_mer_v1
-        canonical_itn_cs: asr.cs.mer.canonical_itn_cs_v1.token_mer_v1
+        canonical_itn_cs: asr.cs.mer.canonical_itn_cs_v2.token_mer_v1
   ja:
     cer:
       default: asr.ja.cer.funasr_itn_ja_v1.wenet_cer_v1

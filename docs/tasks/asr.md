@@ -21,7 +21,7 @@ specific non-default pipeline.
 |:------------|:---------|:------|:------|
 | `asr.zh.cer.wetext_norm_zh_itn_v1.wenet_cer_v1` | `zh` | `normalization/wetext_norm` (`zh_itn`) -> `scoring/wenet_cer` | Default Mandarin CER |
 | `asr.zh.cer.aispeech_norm_zh_v1.wenet_cer_v1` | `zh` | `normalization/aispeech_norm` -> `scoring/wenet_cer` | Legacy AISpeech-normalized CER |
-| `asr.zh.cer.canonical_itn_zh_v1.token_cer_v1` | `zh` | `normalization/canonical_itn` -> `scoring/token_cer` | Canonical ITN CER; requires `[canonical]` |
+| `asr.zh.cer.canonical_itn_zh_v2.token_cer_v1` | `zh` | `normalization/canonical_itn` -> `scoring/token_cer` | Canonical ITN CER; requires `[canonical]` |
 | `asr.ja.cer.funasr_itn_ja_v1.wenet_cer_v1` | `ja` | `normalization/funasr_itn` (`ja`) -> `scoring/wenet_cer` | Default Japanese CER; optional node setup required |
 | `asr.ko.cer.funasr_itn_ko_v1.wenet_cer_v1` | `ko` | `normalization/funasr_itn` (`ko`) -> `scoring/wenet_cer` | Default Korean CER; optional node setup required |
 | `asr.zh.cer.giga_norm_chn_v1.wenet_cer_v1` | `zh` | `normalization/giga_norm` (`CHN`) -> `scoring/wenet_cer` | GigaSpeechBench alternative; requires `[giga]` |
@@ -36,7 +36,7 @@ specific non-default pipeline.
 |:------------|:---------|:------|:------|
 | `asr.en.wer.whisper_norm_english_v1.wenet_wer_v1` | `en` | `normalization/whisper_norm` -> `scoring/wenet_wer` | Default English WER |
 | `asr.en.wer.aispeech_norm_en_v1.wenet_wer_v1` | `en` | `normalization/aispeech_norm` -> `scoring/wenet_wer` | Legacy AISpeech-normalized WER |
-| `asr.en.wer.canonical_itn_en_v1.token_mer_v1` | `en` | `normalization/canonical_itn` -> `scoring/token_mer` | Canonical ITN WER; requires `[canonical]` |
+| `asr.en.wer.canonical_itn_en_v2.token_mer_v1` | `en` | `normalization/canonical_itn` -> `scoring/token_mer` | Canonical ITN WER; requires `[canonical]` |
 | `asr.es.wer.funasr_itn_es_v1.wenet_wer_v1` | `es` | `normalization/funasr_itn` (`es`) -> `scoring/wenet_wer` | Default Spanish WER; optional node setup required |
 | `asr.fr.wer.funasr_itn_fr_v1.wenet_wer_v1` | `fr` | `normalization/funasr_itn` (`fr`) -> `scoring/wenet_wer` | Default French WER; optional node setup required |
 | `asr.de.wer.funasr_itn_de_v1.wenet_wer_v1` | `de` | `normalization/funasr_itn` (`de`) -> `scoring/wenet_wer` | Default German WER; optional node setup required |
@@ -64,11 +64,15 @@ specific non-default pipeline.
 | Pipeline ID | Language | Nodes | Notes |
 |:------------|:---------|:------|:------|
 | `asr.cs.mer.aispeech_norm_cs_v1.wenet_mer_v1` | `cs` | `normalization/aispeech_norm` -> `scoring/wenet_mer` | Default code-switch MER |
-| `asr.cs.mer.canonical_itn_cs_v1.token_mer_v1` | `cs` | `normalization/canonical_itn` -> `scoring/token_mer` | Canonical ITN MER; requires `[canonical]` |
+| `asr.cs.mer.canonical_itn_cs_v2.token_mer_v1` | `cs` | `normalization/canonical_itn` -> `scoring/token_mer` | Canonical ITN MER; requires `[canonical]` |
 
 `pipeline_id` uses the canonical metric plus versioned computation nodes.
 Canonical ITN pipelines are selected by exact `pipeline_id`, not by a separate
 metric name.
+`canonical_itn` v2 collapses apostrophe-s case-insensitively in English and
+code-switch text. WER/MER can therefore differ from v1 on all-caps input;
+Chinese normalization is unchanged, but its route ID also advances because
+the profiles share one versioned node. The default ASR routes are unchanged.
 
 ## Input Format
 
@@ -99,7 +103,7 @@ sure-eval metric run --pipeline /tmp/asr_ar.json \
 
 # Specific canonical Mandarin CER pipeline
 sure-eval metric describe asr \
-  --pipeline-id asr.zh.cer.canonical_itn_zh_v1.token_cer_v1 \
+  --pipeline-id asr.zh.cer.canonical_itn_zh_v2.token_cer_v1 \
   --output /tmp/asr_canonical.json
 
 sure-eval metric run --pipeline /tmp/asr_canonical.json \
@@ -122,7 +126,7 @@ report = run_task(
     "asr",
     ref_file="ref.txt",
     hyp_file="hyp.txt",
-    pipeline_id="asr.zh.cer.canonical_itn_zh_v1.token_cer_v1",
+    pipeline_id="asr.zh.cer.canonical_itn_zh_v2.token_cer_v1",
     output_dir="/tmp/asr_eval",
 )
 print(report.metric, report.score)  # cer, score
