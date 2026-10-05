@@ -52,7 +52,7 @@ routes:
     language: zh
     metric: cer
     internal_executor_metric: cer_canonical
-    pipeline_id: asr.zh.cer.canonical_itn_zh_v1.token_cer_v1
+    pipeline_id: asr.zh.cer.canonical_itn_zh_v2.token_cer_v1
     nodes:
       - normalization/canonical_itn
       - scoring/token_cer
@@ -71,7 +71,7 @@ routes:
     language: cs
     metric: mer
     internal_executor_metric: mer_canonical
-    pipeline_id: asr.cs.mer.canonical_itn_cs_v1.token_mer_v1
+    pipeline_id: asr.cs.mer.canonical_itn_cs_v2.token_mer_v1
     nodes:
       - normalization/canonical_itn
       - scoring/token_mer
@@ -81,7 +81,7 @@ routes:
     language: en
     metric: wer
     internal_executor_metric: wer_canonical
-    pipeline_id: asr.en.wer.canonical_itn_en_v1.token_mer_v1
+    pipeline_id: asr.en.wer.canonical_itn_en_v2.token_mer_v1
     nodes:
       - normalization/canonical_itn
       - scoring/token_mer
