@@ -8,10 +8,7 @@ from sure_eval.evaluation.core.types import PipelineNodeResult
 from sure_eval.evaluation.nodes.scoring._audio_quality import MOSRow, SpeakerRow
 
 if TYPE_CHECKING:
-    from sure_eval.evaluation.nodes.scoring._full_reference_audio import (
-        FullReferenceAudioProvider,
-        FullReferenceAudioRow,
-    )
+    from sure_eval.evaluation.nodes.scoring._full_reference_audio import FullReferenceAudioRow
 
 
 def score_speaker_metric(
