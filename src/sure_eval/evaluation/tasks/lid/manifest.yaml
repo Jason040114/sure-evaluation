@@ -1,0 +1,16 @@
+task: LID
+language_sensitive: false
+canonical_entry: sure_eval.evaluation.tasks.lid.pipeline.evaluate_lid_files
+default_metric: accuracy
+input_contracts:
+  task/lid_key_labels:
+    purpose: spoken_language_identification_accuracy
+    required_roles: [hyp, ref]
+    optional_roles: []
+    row_format: key_label
+    alignment_key: key
+    aggregation: utterance_accuracy
+    main_report: true
+notes:
+  - The route evaluates labels produced by any LID system.
+  - Dataset-defined non-empty labels are accepted after canonical normalization.

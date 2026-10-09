@@ -48,7 +48,7 @@ se = [
 ]
 download = [
     "huggingface-hub>=0.20.0",
-    "modelscope>=1.10.0",
+    "modelscope>=1.37.1",
 ]
 datasets = [
     "datasets>=2.14.0",
@@ -56,6 +56,12 @@ datasets = [
 canonical = [
     "cn2an>=0.5.24,<0.6",
     "rapidfuzz>=3.0,<4",
+]
+giga = [
+    "whisper_normalizer>=0.0.10",
+    "zhconv>=1.4.3",
+    "num2words>=0.5.13",
+    "underthesea>=6.8.0",
 ]
 
 [project.scripts]
@@ -90,6 +96,8 @@ sure_eval = [
     "evaluation/nodes/normalization/whisper_norm/normalization_impl/LICENSE.*",
     "evaluation/nodes/normalization/xnorm/xnorm_vendor/text_normalization/numbers/data/*.json",
     "evaluation/nodes/normalization/xnorm/xnorm_vendor/LICENSE",
+    "evaluation/nodes/*/*/normalization_impl/LICENSE*",
+    "evaluation/nodes/normalization/giga_norm/normalization_impl/ref_code/*.tsv",
     "evaluation/nodes/scoring/sctk_sclite/*.sh",
     "evaluation/conversion/*/manifest.yaml",
     "evaluation/conversion/*/*.md",
@@ -116,6 +124,9 @@ target-version = ["py310"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = [
+    "src/sure_eval/evaluation/nodes/normalization/giga_norm/normalization_impl",
+]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]

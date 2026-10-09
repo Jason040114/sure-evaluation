@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 import sure_eval
+from sure_eval.evaluation.checksums import verify_file_sha256
 from sure_eval.evaluation.cli_adapters import (
     build_pipeline_spec,
     list_metric_routes,
@@ -43,7 +44,9 @@ console = Console()
 
 @metric_app.command("describe")
 def describe_metric_pipeline(
-    task: str = typer.Argument(..., help="Task name, e.g. asr, s2tt, kws, classification, slu"),
+    task: str = typer.Argument(
+        ..., help="Task name, e.g. asr, lid, s2tt, kws, classification, slu"
+    ),
     language: Optional[str] = typer.Option(None, "--language", "-l", help="Task language/profile"),
     metric: Optional[str] = typer.Option(None, "--metric", "-m", help="Metric name"),
     metrics: Optional[str] = typer.Option(
@@ -94,7 +97,7 @@ def describe_metric_pipeline(
 
 @metric_app.command("routes")
 def list_routes(
-    task: str = typer.Argument(..., help="Task name, e.g. asr, tts, kws, classification"),
+    task: str = typer.Argument(..., help="Task name, e.g. asr, lid, tts, kws, classification"),
     language: Optional[str] = typer.Option(None, "--language", "-l", help="Task language/profile"),
     metric: Optional[str] = typer.Option(None, "--metric", "-m", help="Canonical metric name"),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
@@ -146,10 +149,25 @@ def run_metric_pipeline(
         None, "--label-spec", help="Classification label spec path or id"
     ),
     reference_jsonl: Optional[str] = typer.Option(
-        None, "--reference-jsonl", help="KWS/VAD reference JSONL"
+        None, "--reference-jsonl", help="KWS/VAD/DOA reference JSONL"
     ),
     sample_output: Optional[str] = typer.Option(
-        None, "--sample-output", help="KWS/VAD/SV model output JSONL"
+        None, "--sample-output", help="KWS/VAD/SV/DOA model output JSONL"
+    ),
+    dimension: Optional[str] = typer.Option(
+        None, "--dimension", help="Canonical DOA dimension: 2d or 3d"
+    ),
+    threshold_deg: Optional[float] = typer.Option(
+        None, "--threshold-deg", help="DOA angular gating threshold"
+    ),
+    aggregation: Optional[str] = typer.Option(
+        None, "--aggregation", help="DOA aggregation: macro_recording or micro"
+    ),
+    timestamp_tolerance_sec: Optional[float] = typer.Option(
+        None, "--timestamp-tolerance-sec", help="Canonical timestamp tolerance"
+    ),
+    prediction_activity_policy: Optional[str] = typer.Option(
+        None, "--prediction-activity-policy", help="Canonical prediction activity policy"
     ),
     trial_manifest: Optional[str] = typer.Option(
         None, "--trial-manifest", help="SV evaluator-owned trial manifest"
@@ -171,10 +189,12 @@ def run_metric_pipeline(
         None, "--samples-jsonl", help="TTS/VC/SE/TSE samples JSONL file"
     ),
     device: str = typer.Option(
-        "cuda", "--device", help="Device passed to audio metric runtime builders"
+        "cuda", "--device", help="Device passed to audio model runtime builders"
     ),
     cache_dir: Optional[str] = typer.Option(
-        None, "--cache-dir", help="Cache directory for audio metric runtime builders"
+        None,
+        "--cache-dir",
+        help="Cache directory for audio metric runtime builders",
     ),
     validate_env: bool = typer.Option(
         False, "--validate-env", help="Validate selected node-local environments before running"
@@ -198,6 +218,11 @@ def run_metric_pipeline(
             label_spec=label_spec,
             reference_jsonl=reference_jsonl,
             sample_output=sample_output,
+            dimension=dimension,
+            threshold_deg=threshold_deg,
+            aggregation=aggregation,
+            timestamp_tolerance_sec=timestamp_tolerance_sec,
+            prediction_activity_policy=prediction_activity_policy,
             trial_manifest=trial_manifest,
             wekws_label_file=wekws_label_file,
             wekws_score_file=wekws_score_file,
@@ -208,6 +233,10 @@ def run_metric_pipeline(
             device=device,
             cache_dir=cache_dir,
         )
+        if validate_env:
+            summary["environment_note"] = (
+                "selected node-local environments were validated before execution"
+            )
     except EnvironmentCheckError as exc:
         _print_env_error(exc, json_output=json_output)
         raise typer.Exit(1) from exc
@@ -217,10 +246,13 @@ def run_metric_pipeline(
     if json_output:
         sys.stdout.write(json.dumps(summary, ensure_ascii=False) + "\n")
         return
-    console.print(
-        "[yellow]Environment note:[/yellow] use --validate-env for checks; "
-        "check pyproject.toml or uv.lock in selected node directories."
-    )
+    if validate_env:
+        console.print("[green]Environment:[/green] selected node environments validated.")
+    else:
+        console.print(
+            "[yellow]Environment note:[/yellow] use --validate-env for checks; "
+            "check pyproject.toml or uv.lock in selected node directories."
+        )
     table = Table(title="Metric Run")
     table.add_column("Field", style="cyan")
     table.add_column("Value", style="white")
@@ -605,14 +637,16 @@ def _setup_plan_for_node(node_id: str, *, no_download: bool) -> dict[str, object
     downloads = []
     for model in models:
         if isinstance(model, dict):
-            downloads.append(
-                {
-                    "id": model.get("id"),
-                    "provider": model.get("provider"),
-                    "target": model.get("target"),
-                    "env": model.get("env"),
-                }
-            )
+            download = {
+                "id": model.get("id"),
+                "provider": model.get("provider"),
+                "target": model.get("target"),
+                "env": model.get("env"),
+            }
+            for key in ("revision", "layout", "sha256"):
+                if model.get(key):
+                    download[key] = model[key]
+            downloads.append(download)
     return {
         "node_id": node_id,
         "node_path": str(node_path),
@@ -685,26 +719,47 @@ def _download_asset(asset: dict[str, object]) -> None:
     provider = str(asset.get("provider") or "").lower()
     model_id = str(asset.get("id") or "")
     target_path = asset.get("target_path")
+    revision = str(asset.get("revision") or "")
+    layout = str(asset.get("layout") or "")
     if provider == "huggingface":
         from huggingface_hub import snapshot_download
 
         kwargs = {"repo_id": model_id}
+        if revision:
+            kwargs["revision"] = revision
         if target_path:
             kwargs["local_dir"] = str(Path(str(target_path)).parent)
         snapshot_download(**kwargs)
+        _verify_downloaded_asset(asset)
         return
     if provider == "modelscope":
         from modelscope import snapshot_download
 
         kwargs = {"model_id": model_id}
-        if target_path:
+        if revision:
+            kwargs["revision"] = revision
+        if target_path and layout == "local_dir":
+            kwargs["local_dir"] = str(Path(str(target_path)).parent)
+        elif target_path:
             kwargs["cache_dir"] = str(Path(str(target_path)).parents[1])
         snapshot_download(**kwargs)
+        _verify_downloaded_asset(asset)
         return
     raise RuntimeError(
         f"provider {provider!r} is manual or unsupported for automated download; "
         "use the target/env fields from node_env.yaml."
     )
+
+
+def _verify_downloaded_asset(asset: dict[str, object]) -> None:
+    expected = str(asset.get("sha256") or "").lower()
+    if not expected:
+        return
+    target_path = Path(str(asset.get("target_path") or ""))
+    try:
+        verify_file_sha256(target_path, expected)
+    except RuntimeError as exc:
+        raise RuntimeError(f"downloaded asset {exc}") from exc
 
 
 def _resolve_env_node_ids(

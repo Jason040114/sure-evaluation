@@ -145,7 +145,10 @@ def list_metric_routes(
         route = dict(configured_route)
         if not _route_matches_task_alias(route, requested_task):
             continue
-        if requested_metric and canonical_metric(str(route.get("metric") or "")) != requested_metric:
+        if (
+            requested_metric
+            and canonical_metric(str(route.get("metric") or "")) != requested_metric
+        ):
             continue
         route_language = _concrete_route_language(
             route,
@@ -378,6 +381,11 @@ def run_pipeline_spec(
     label_spec: str | None = None,
     reference_jsonl: str | None = None,
     sample_output: str | None = None,
+    dimension: str | None = None,
+    threshold_deg: float | None = None,
+    aggregation: str | None = None,
+    timestamp_tolerance_sec: float | None = None,
+    prediction_activity_policy: str | None = None,
     trial_manifest: str | None = None,
     wekws_label_file: str | None = None,
     wekws_score_file: str | None = None,
@@ -404,6 +412,11 @@ def run_pipeline_spec(
         "label_spec": label_spec,
         "reference_jsonl": reference_jsonl,
         "sample_output": sample_output,
+        "dimension": dimension,
+        "threshold_deg": threshold_deg,
+        "aggregation": aggregation,
+        "timestamp_tolerance_sec": timestamp_tolerance_sec,
+        "prediction_activity_policy": prediction_activity_policy,
         "trial_manifest": trial_manifest,
         "wekws_label_file": wekws_label_file,
         "wekws_score_file": wekws_score_file,
@@ -411,10 +424,22 @@ def run_pipeline_spec(
         "keyword": keyword,
         "samples_jsonl": samples_jsonl,
     }
+    if task != "doa":
+        for key in (
+            "dimension",
+            "threshold_deg",
+            "aggregation",
+            "timestamp_tolerance_sec",
+            "prediction_activity_policy",
+        ):
+            cli_values.pop(key, None)
     kwargs.update({key: value for key, value in cli_values.items() if value is not None})
     if task == "kws":
         kwargs["macro_recall_false_alarms"] = macro_recall_false_alarms
-    if task in AUDIO_SAMPLE_TASKS:
+    uses_audio_samples = task in AUDIO_SAMPLE_TASKS or "samples_jsonl" in (
+        pipeline.get("required_roles") or ()
+    )
+    if uses_audio_samples:
         kwargs.update(
             _audio_sample_kwargs(
                 task, pipeline, samples_jsonl=samples_jsonl, device=device, cache_dir=cache_dir
@@ -422,7 +447,7 @@ def run_pipeline_spec(
         )
     kwargs["output_dir"] = output_dir
     _validate_required_args(pipeline, kwargs)
-    if task in AUDIO_SAMPLE_TASKS:
+    if uses_audio_samples:
         kwargs.pop("samples_jsonl", None)
     report = run_task(task, **kwargs)
     output_path = Path(output_dir)
@@ -515,6 +540,16 @@ def _describe_kwargs(
         if pipeline_id:
             kwargs["pipeline_id"] = pipeline_id
         return kwargs
+    if task == "doa":
+        kwargs = {"metric": metric or "mae"}
+        if pipeline_id:
+            kwargs["pipeline_id"] = pipeline_id
+        return kwargs
+    if task == "lid":
+        kwargs = {"metric": metric or "accuracy"}
+        if pipeline_id:
+            kwargs["pipeline_id"] = pipeline_id
+        return kwargs
     if task in {"classification", "ser", "gr"}:
         # scripts/run.py already forwards the correct task alias for SER/GR.
         return {"pipeline_id": pipeline_id} if pipeline_id else {}
@@ -577,11 +612,15 @@ def _route_choices(routes: dict[str, Any], *, language: str | None = None) -> li
         pipeline_id = route.get("pipeline_id")
         choices.append(
             {
-                "pipeline_id": str(pipeline_id).format(language=route_language) if pipeline_id else None,
+                "pipeline_id": (
+                    str(pipeline_id).format(language=route_language) if pipeline_id else None
+                ),
                 "language": route.get("language"),
                 "metric": route.get("metric"),
                 "nodes": list(route.get("nodes") or ()),
-                "computation_node_ids": list(route.get("computation_nodes") or route.get("nodes") or ()),
+                "computation_node_ids": list(
+                    route.get("computation_nodes") or route.get("nodes") or ()
+                ),
                 "input_contract": route.get("input_contract"),
                 "executor": route.get("executor"),
                 "selectors": {
@@ -607,7 +646,9 @@ def _route_choices(routes: dict[str, Any], *, language: str | None = None) -> li
     return choices
 
 
-def _match_selected_routes(route_choices: list[dict[str, Any]], description) -> list[dict[str, Any]]:
+def _match_selected_routes(
+    route_choices: list[dict[str, Any]], description
+) -> list[dict[str, Any]]:
     if description.member_pipeline_ids:
         return [
             _match_route(route_choices, "pipeline_id", pipeline_id)
@@ -691,15 +732,14 @@ def _run_kwargs_from_pipeline(pipeline: dict[str, Any]) -> dict[str, Any]:
     ):
         kwargs["language"] = pipeline["language"]
     if task == "classification":
-        kwargs["task"] = pipeline.get("task_alias") or "classification"
         if pipeline.get("pipeline_id"):
             kwargs["pipeline_id"] = pipeline["pipeline_id"]
-    elif task in {"ser", "gr", "slu"}:
+    elif task in {"ser", "gr", "slu", "lid"}:
         if pipeline.get("pipeline_id"):
             kwargs["pipeline_id"] = pipeline["pipeline_id"]
     elif task in AUDIO_SAMPLE_TASKS or task == "sv":
-        use_atomic_pipeline_id = (
-            pipeline.get("pipeline_kind") == "atomic" and pipeline.get("pipeline_id")
+        use_atomic_pipeline_id = pipeline.get("pipeline_kind") == "atomic" and pipeline.get(
+            "pipeline_id"
         )
         metrics = _metrics_from_pipeline(pipeline, task=task)
         if metrics and not use_atomic_pipeline_id:
@@ -812,10 +852,9 @@ def _audio_sample_kwargs(
         )
     else:
         return {}
-    payload = {
-        "samples": samples,
-        "mos_providers": runtime.get("mos_providers", {}),
-    }
+    payload = {"samples": samples}
+    if "mos_providers" in runtime:
+        payload["mos_providers"] = runtime["mos_providers"]
     if "transcribers" in runtime:
         payload["transcribers"] = runtime["transcribers"]
     if "speaker_providers" in runtime:

@@ -13,6 +13,8 @@ include src/sure_eval/evaluation/nodes/normalization/whisper_norm/normalization_
 include src/sure_eval/evaluation/nodes/normalization/whisper_norm/normalization_impl/LICENSE.*
 recursive-include src/sure_eval/evaluation/nodes/normalization/xnorm/xnorm_vendor *.py *.json
 include src/sure_eval/evaluation/nodes/normalization/xnorm/xnorm_vendor/LICENSE
+include src/sure_eval/evaluation/nodes/*/*/normalization_impl/LICENSE*
+recursive-include src/sure_eval/evaluation/nodes/normalization/giga_norm/normalization_impl/ref_code *.tsv
 include src/sure_eval/evaluation/nodes/scoring/sctk_sclite/*.sh
 include src/sure_eval/reports/sota/*.yaml
 prune src/sure_eval/evaluation/nodes/*/*/checkpoints

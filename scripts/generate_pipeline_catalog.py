@@ -29,6 +29,8 @@ DISCOVERY_TASKS = (
     "slu",
     "kws",
     "vad",
+    "doa",
+    "lid",
     "sv",
 )
 
