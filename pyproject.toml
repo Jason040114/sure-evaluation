@@ -126,6 +126,7 @@ line-length = 100
 target-version = "py310"
 extend-exclude = [
     "src/sure_eval/evaluation/nodes/normalization/giga_norm/normalization_impl",
+    "src/sure_eval/evaluation/nodes/normalization/xnorm/xnorm_vendor",
 ]
 
 [tool.ruff.lint]

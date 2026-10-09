@@ -5,6 +5,23 @@ from pathlib import Path
 import pytest
 
 
+def _require_xnorm_node_env() -> None:
+    node_dir = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "sure_eval"
+        / "evaluation"
+        / "nodes"
+        / "normalization"
+        / "xnorm"
+    )
+    if not (node_dir / ".venv" / "bin" / "python").exists():
+        pytest.skip(
+            "xnorm node-local environment is not prepared. "
+            "Run: sure-eval env setup --node normalization/xnorm"
+        )
+
+
 def test_xnorm_exposes_all_supported_profiles() -> None:
     from sure_eval.evaluation.nodes.normalization.xnorm import SUPPORTED_PROFILES
 
@@ -51,6 +68,7 @@ def test_xnorm_rejects_unknown_language() -> None:
 
 
 def test_xnorm_key_text_adapter_preserves_keys_and_trace(tmp_path: Path) -> None:
+    _require_xnorm_node_env()
     from sure_eval.evaluation.core.types import KeyTextFiles
     from sure_eval.evaluation.nodes.normalization.xnorm import normalize_xnorm_key_text_files
 
@@ -77,7 +95,7 @@ def test_xnorm_key_text_adapter_preserves_keys_and_trace(tmp_path: Path) -> None
     Path(normalized.hyp_file).unlink()
 
 
-def test_xnorm_manifest_is_in_process_and_declares_profiles() -> None:
+def test_xnorm_manifest_declares_profiles() -> None:
     from sure_eval.evaluation.env_check import NodeEnvChecker
     from sure_eval.evaluation.scripts.contracts import load_node_manifest
 
@@ -105,10 +123,14 @@ def test_xnorm_manifest_is_in_process_and_declares_profiles() -> None:
         "vi",
         "zh",
     }
-    assert NodeEnvChecker().check_node("normalization/xnorm").ok
+    result = NodeEnvChecker().check_node("normalization/xnorm")
+    assert result.runtime == "node_local_project"
+    if not result.ok:
+        pytest.skip(result.message)
 
 
 def test_xnorm_explicit_asr_selector_and_pipeline(tmp_path: Path) -> None:
+    _require_xnorm_node_env()
     from sure_eval.evaluation.tasks.asr.pipeline import (
         _normalize_normalizer,
         evaluate_asr_files,
