@@ -42,7 +42,7 @@ ENVIRONMENT_NOTE = (
     "Check selected node directories for pyproject.toml or uv.lock when preparing a run."
 )
 
-AUDIO_SAMPLE_TASKS = {"tts", "vc", "se", "speech_enhancement", "tse"}
+AUDIO_SAMPLE_TASKS = {"tts", "vc", "se", "speech_enhancement", "tse", "tta"}
 SE_TASKS = {"se", "speech_enhancement"}
 SE_DEFAULT_METRICS = ("si-sdr", "stoi", "pesq", "dnsmos", "wv-mos", "utmos")
 SV_DEFAULT_METRICS = ("eer", "min_dcf")
@@ -600,6 +600,13 @@ def _describe_kwargs(
         if pipeline_id:
             kwargs["pipeline_id"] = pipeline_id
         return kwargs
+    if task == "tta":
+        kwargs = {"language": "n/a"}
+        if metric:
+            kwargs["metrics"] = split_metric_csv(metric)
+        if pipeline_id:
+            kwargs["pipeline_id"] = pipeline_id
+        return kwargs
     return {}
 
 
@@ -850,6 +857,12 @@ def _audio_sample_kwargs(
             cache_dir=cache_dir,
             transcription_node_id=_semantic_transcription_node_from_pipeline(pipeline),
         )
+    elif task == "tta":
+        from sure_eval.evaluation.audio_runtime import build_tta_runtime
+        from sure_eval.evaluation.audio_samples import load_tta_samples_jsonl
+
+        samples = load_tta_samples_jsonl(samples_jsonl, metrics=metrics)
+        runtime = build_tta_runtime(metrics=metrics, device=device, cache_dir=cache_dir)
     else:
         return {}
     payload = {"samples": samples}
@@ -861,6 +874,10 @@ def _audio_sample_kwargs(
         payload["speaker_providers"] = runtime["speaker_providers"]
     if "reference_providers" in runtime:
         payload["reference_providers"] = runtime["reference_providers"]
+    if "providers" in runtime:
+        payload["providers"] = runtime["providers"]
+    elif task == "tta":
+        payload["providers"] = runtime
     return payload
 
 
