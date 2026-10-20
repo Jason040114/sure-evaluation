@@ -116,6 +116,28 @@ def test_latency_uses_first_correct_trigger_and_preserves_early_detection():
     assert report.summary["unmatched_triggers"] == 1
 
 
+def test_unmatched_positive_trigger_is_diagnostic_only_for_background_fa_rate():
+    from sure_eval.evaluation.nodes.scoring.wekws_det.metrics import KWSMetric
+
+    result = KWSMetric().calculate_samples(
+        [
+            KWSSample(
+                key="positive-stream",
+                expected_detected=True,
+                duration=5,
+                events=[KWSEvent("A", 1, 0.5)],
+                detections=[KWSTrigger("WRONG", 0.9, 3)],
+            ),
+            negative(duration=3600, score=0.1),
+        ]
+    )
+
+    point = next(item for item in result.details["operating_curve"] if item["threshold"] == pytest.approx(0.9))
+    assert point["false_alarms"] == 0
+    assert point["false_alarm_per_hour"] == 0.0
+    assert point["unmatched_triggers"] == 1
+
+
 def test_one_trigger_cannot_match_two_reference_events():
     report = KWSMetricPipeline().evaluate(
         [
