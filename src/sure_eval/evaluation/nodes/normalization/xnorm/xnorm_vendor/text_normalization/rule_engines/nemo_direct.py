@@ -6,8 +6,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 import importlib
 import inspect
+import hashlib
 from pathlib import Path
 import re
+import sys
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from .nemo import (
@@ -15,6 +18,7 @@ from .nemo import (
     NEMO_ITN_LANGUAGES,
     NemoDependencyError,
     NemoFarError,
+    NemoCacheLayout,
     NemoInverseNormalizerConfig,
     NemoLanguageNotSupportedError,
     NemoNormalizerConfig,
@@ -25,9 +29,11 @@ from .nemo import (
     get_nemo_engine,
     get_nemo_itn_engine,
     call_with_cache_rebuild,
+    categorized_nemo_cache_layout,
     hash_optional_file,
     hash_source,
     make_cache_fingerprint,
+    official_cache_fingerprint,
     nemo_dependency_versions,
     prepare_nemo_cache_file,
     resolve_nemo_cache_layout,
@@ -3680,6 +3686,9 @@ class NemoDirectItnConfig:
     overwrite_cache: bool = False
     whitelist: Optional[str] = None
     cache_search_dirs: Tuple[str, ...] = ()
+    # direct 目录已按 fingerprint 隔离；fallback 需要回到未隔离根目录。
+    cache_root_dir: Optional[str] = None
+    cache_root_search_dirs: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.language not in DIRECT_ITN_LANGUAGES:
@@ -3690,6 +3699,7 @@ class NemoDirectItnConfig:
         if self.input_case not in {"cased", "lower_cased"}:
             raise ValueError("nemo_input_case must be cased or lower_cased")
         object.__setattr__(self, "cache_search_dirs", tuple(self.cache_search_dirs or ()))
+        object.__setattr__(self, "cache_root_search_dirs", tuple(self.cache_root_search_dirs or ()))
 
 
 @dataclass(frozen=True)
@@ -3702,6 +3712,9 @@ class NemoDirectTnConfig:
     overwrite_cache: bool = False
     whitelist: Optional[str] = None
     cache_search_dirs: Tuple[str, ...] = ()
+    # direct 目录已按 fingerprint 隔离；fallback 需要回到未隔离根目录。
+    cache_root_dir: Optional[str] = None
+    cache_root_search_dirs: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.language not in DIRECT_TN_LANGUAGES:
@@ -3711,6 +3724,7 @@ class NemoDirectTnConfig:
         if self.input_case not in {"cased", "lower_cased"}:
             raise ValueError("nemo_input_case must be cased or lower_cased")
         object.__setattr__(self, "cache_search_dirs", tuple(self.cache_search_dirs or ()))
+        object.__setattr__(self, "cache_root_search_dirs", tuple(self.cache_root_search_dirs or ()))
 
 
 def ensure_official_fallback_cache(
@@ -3720,15 +3734,17 @@ def ensure_official_fallback_cache(
 ) -> None:
     """On direct cold compose, preheat the fallback graph from the official fingerprint. Fallback is the official large graph, not a direct small graph. Hot load skips this so every process does not hold official memory."""
 
+    cache_dir, cache_search_dirs = _official_fallback_cache_location(config, itn=itn)
+
     if itn:
         get_nemo_itn_engine(
             NemoInverseNormalizerConfig(
                 language=config.language,
                 input_case=config.input_case,
-                cache_dir=config.cache_dir,
+                cache_dir=cache_dir,
                 overwrite_cache=config.overwrite_cache,
                 whitelist=config.whitelist,
-                cache_search_dirs=config.cache_search_dirs,
+                cache_search_dirs=cache_search_dirs,
             )
         )
         return
@@ -3736,12 +3752,42 @@ def ensure_official_fallback_cache(
         NemoNormalizerConfig(
             language=config.language,
             input_case=config.input_case,
-            cache_dir=config.cache_dir,
+            cache_dir=cache_dir,
             overwrite_cache=config.overwrite_cache,
             whitelist=config.whitelist,
-            cache_search_dirs=config.cache_search_dirs,
+            cache_search_dirs=cache_search_dirs,
         )
     )
+
+
+def _official_fallback_cache_location(
+    config: Union["NemoDirectTnConfig", "NemoDirectItnConfig"],
+    *,
+    itn: bool,
+) -> Tuple[str, Tuple[str, ...]]:
+    """Return the official cache directory without mixing it into direct artifacts."""
+
+    if config.cache_root_dir is not None:
+        root_layout = NemoCacheLayout(
+            write_dir=config.cache_root_dir,
+            read_dirs=config.cache_root_search_dirs or (config.cache_root_dir,),
+        )
+        fingerprint = official_cache_fingerprint(
+            config.language,
+            "itn" if itn else "tn",
+            config.input_case,
+            config.whitelist,
+        )
+        official_layout = categorized_nemo_cache_layout(
+            root_layout, config.language, "itn" if itn else "tn", "official", fingerprint
+        )
+        cache_dir = official_layout.write_dir
+        cache_search_dirs = official_layout.read_dirs
+    else:
+        # 兼容直接构造 NemoDirect*Config 的旧调用。
+        cache_dir = config.cache_dir
+        cache_search_dirs = config.cache_search_dirs
+    return cache_dir, tuple(cache_search_dirs)
 
 
 def _load_pynini_module() -> Any:
@@ -5142,6 +5188,51 @@ def _compose_direct_itn_fst(tagger: Any, verbalizer: Any) -> Any:
     return (tagger.fst @ verbalizer.fst).optimize()
 
 
+_ZH_ITN_CATEGORIES = ("cardinal", "date", "decimal", "fraction", "money", "ordinal", "time")
+_ZH_ITN_CANDIDATE_RE = re.compile(
+    r"[零〇一二三四五六七八九十百千万萬億兆京点點负負兩两年月日时時分秒元块個个]+"
+)
+
+
+def _build_zh_itn_category(category: str) -> Any:
+    """Build one Chinese ITN category without full ClassifyFst optimization."""
+
+    from nemo_text_processing.inverse_text_normalization.zh.taggers.cardinal import CardinalFst
+    from nemo_text_processing.inverse_text_normalization.zh.taggers.date import DateFst
+    from nemo_text_processing.inverse_text_normalization.zh.taggers.decimal import DecimalFst
+    from nemo_text_processing.inverse_text_normalization.zh.taggers.fraction import FractionFst
+    from nemo_text_processing.inverse_text_normalization.zh.taggers.money import MoneyFst
+    from nemo_text_processing.inverse_text_normalization.zh.taggers.ordinal import OrdinalFst
+    from nemo_text_processing.inverse_text_normalization.zh.taggers.time import TimeFst
+    from nemo_text_processing.inverse_text_normalization.zh.verbalizers.cardinal import CardinalFst as VCardinalFst
+    from nemo_text_processing.inverse_text_normalization.zh.verbalizers.date import DateFst as VDateFst
+    from nemo_text_processing.inverse_text_normalization.zh.verbalizers.decimal import DecimalFst as VDecimalFst
+    from nemo_text_processing.inverse_text_normalization.zh.verbalizers.fraction import FractionFst as VFractionFst
+    from nemo_text_processing.inverse_text_normalization.zh.verbalizers.money import MoneyFst as VMoneyFst
+    from nemo_text_processing.inverse_text_normalization.zh.verbalizers.ordinal import OrdinalFst as VOrdinalFst
+    from nemo_text_processing.inverse_text_normalization.zh.verbalizers.time import TimeFst as VTimeFst
+
+    cardinal = CardinalFst()
+    if category == "cardinal":
+        tagger, verbalizer = cardinal, VCardinalFst()
+    elif category == "date":
+        tagger, verbalizer = DateFst(), VDateFst()
+    elif category == "decimal":
+        tagger, verbalizer = DecimalFst(cardinal=cardinal), VDecimalFst()
+    elif category == "fraction":
+        tagger, verbalizer = FractionFst(cardinal=cardinal), VFractionFst()
+    elif category == "money":
+        decimal = DecimalFst(cardinal=cardinal)
+        tagger, verbalizer = MoneyFst(cardinal=cardinal, decimal=decimal), VMoneyFst()
+    elif category == "ordinal":
+        tagger, verbalizer = OrdinalFst(cardinal=cardinal), VOrdinalFst()
+    elif category == "time":
+        tagger, verbalizer = TimeFst(), VTimeFst()
+    else:
+        raise ValueError(f"unsupported zh ITN category: {category}")
+    return tagger.fst @ verbalizer.fst
+
+
 def direct_itn_cache_fingerprint(config: "NemoDirectItnConfig") -> str:
     parts = nemo_dependency_versions()
     parts.update(
@@ -5153,6 +5244,15 @@ def direct_itn_cache_fingerprint(config: "NemoDirectItnConfig") -> str:
             "compose": hash_source(_compose_direct_itn_fst),
         }
     )
+    if config.language == "zh":
+        parts.update(
+            {
+                "zh_category_builder": hash_source(_build_zh_itn_category),
+                "zh_candidate_router": hashlib.sha256(
+                    _ZH_ITN_CANDIDATE_RE.pattern.encode("utf-8")
+                ).hexdigest(),
+            }
+        )
     return make_cache_fingerprint(parts)
 
 
@@ -5178,7 +5278,7 @@ class NemoDirectItnEngine:
     def __init__(self, config: NemoDirectItnConfig):
         self.config = config
         self._pynini = _load_pynini_module()
-        self._graph = self._load_or_build_graph()
+        self._graphs = self._load_or_build_graphs()
         self._fallback = None
 
     def _cache_path(self) -> Path:
@@ -5186,15 +5286,21 @@ class NemoDirectItnEngine:
             f"{self.config.language}_direct_itn_{self.config.input_case}.far"
         )
 
-    def _load_or_build_graph(self) -> Any:
+    def _category_cache_path(self, category: str) -> Path:
+        return Path(self.config.cache_dir) / (
+            f"{self.config.language}_direct_itn_{self.config.input_case}_{category}.far"
+        )
+
+    def _load_or_build_graphs(self) -> Dict[str, Any]:
+        if self.config.language == "zh":
+            return {"cardinal": self._load_or_build_zh_category("cardinal")}
+
         def loader(cache_path: Path) -> Any:
             far = self._pynini.Far(str(cache_path), mode="r")
             return far[DEFAULT_DIRECT_ITN_RULE]
 
         def builder(cache_path: Path) -> Any:
             try:
-                # Write the official fallback graph by fingerprint first, then load it for compose so ClassifyFst does not rebuild.
-                ensure_official_fallback_cache(self.config, itn=True)
                 language = self.config.language
                 tagger_module = importlib.import_module(
                     "nemo_text_processing.inverse_text_normalization."
@@ -5235,8 +5341,37 @@ class NemoDirectItnEngine:
             except Exception as exc:
                 raise NemoFarError(f"failed to build direct ITN grammar: {exc}") from exc
 
-        return prepare_nemo_cache_file(
+        return {DEFAULT_DIRECT_ITN_RULE: prepare_nemo_cache_file(
             self._cache_path(),
+            self.config.overwrite_cache,
+            loader,
+            builder,
+            fingerprint=direct_itn_cache_fingerprint(self.config),
+            search_dirs=self.config.cache_search_dirs,
+        )}
+
+    def _load_or_build_zh_category(self, category: str) -> Any:
+        def loader(cache_path: Path) -> Any:
+            return self._pynini.Far(str(cache_path), mode="r")[category]
+
+        def builder(cache_path: Path) -> Any:
+            started = time.perf_counter()
+            print(
+                f"zh itn backend=direct category={category} build started",
+                file=sys.stderr,
+                flush=True,
+            )
+            graph = _build_zh_itn_category(category)
+            _write_direct_far(self._pynini, cache_path, {category: graph})
+            print(
+                f"zh itn backend=direct category={category} build done in {time.perf_counter() - started:.1f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            return graph
+
+        return prepare_nemo_cache_file(
+            self._category_cache_path(category),
             self.config.overwrite_cache,
             loader,
             builder,
@@ -5245,18 +5380,7 @@ class NemoDirectItnEngine:
         )
 
     def _fallback_normalize(self, text: str) -> str:
-        if self._fallback is None:
-            self._fallback = get_nemo_itn_engine(
-                NemoInverseNormalizerConfig(
-                    language=self.config.language,
-                    input_case=self.config.input_case,
-                    cache_dir=self.config.cache_dir,
-                    overwrite_cache=False,
-                    whitelist=self.config.whitelist,
-                    cache_search_dirs=self.config.cache_search_dirs,
-                )
-            )
-        return _fst_call_or_original(text, lambda: self._fallback.normalize(text))
+        return text
 
     def _apply(self, graph: Any, text: str) -> Optional[str]:
         try:
@@ -5280,7 +5404,37 @@ class NemoDirectItnEngine:
         return _fst_call_or_original(text, lambda: self._normalize_impl(text))
 
     def _normalize_impl(self, text: str) -> str:
-        output = self._apply(self._graph, text)
+        if self.config.language == "zh":
+            pieces = []
+            cursor = 0
+            for match in _ZH_ITN_CANDIDATE_RE.finditer(text):
+                pieces.append(text[cursor:match.start()])
+                value = match.group(0)
+                replacement = None
+                for start in range(len(value)):
+                    for end in range(len(value), start, -1):
+                        span = value[start:end]
+                        for category in _ZH_ITN_CATEGORIES:
+                            graph = self._graphs.get(category)
+                            if graph is None:
+                                graph = self._load_or_build_zh_category(category)
+                                self._graphs[category] = graph
+                            output = self._apply(graph, span)
+                            if output is not None:
+                                replacement = value[:start] + output + value[end:]
+                                break
+                        if replacement is not None:
+                            break
+                    if replacement is not None:
+                        break
+                pieces.append(replacement if replacement is not None else value)
+                cursor = match.end()
+            pieces.append(text[cursor:])
+            output = "".join(pieces)
+            if output != text:
+                return output
+            return self._fallback_normalize(text)
+        output = self._apply(self._graphs[DEFAULT_DIRECT_ITN_RULE], text)
         if output is None:
             return self._fallback_normalize(text)
         return output
@@ -5325,8 +5479,6 @@ class NemoDirectTnEngine:
 
         def builder(cache_path: Path) -> dict[str, Any]:
             try:
-                # Small graphs omit fallback classes such as dates; compile the official graph into the same cache by fingerprint.
-                ensure_official_fallback_cache(self.config, itn=False)
                 graphs = _build_direct_tn_graphs(self.config.language)
                 _write_direct_far(
                     self._pynini,
@@ -6530,23 +6682,57 @@ def initialize_direct_nemo_engine(
         effective_cache_dir = cache_dir or DEFAULT_NEMO_CACHE_DIR
         search_dirs = tuple(cache_search_dirs)
     if itn:
-        return get_nemo_direct_itn_engine(
-            NemoDirectItnConfig(
-                language=language,
-                input_case=input_case or "lower_cased",
-                cache_dir=effective_cache_dir,
-                overwrite_cache=overwrite_cache,
-                whitelist=whitelist,
-                cache_search_dirs=search_dirs,
-            )
-        )
-    return get_nemo_direct_tn_engine(
-        NemoDirectTnConfig(
+        base_config = NemoDirectItnConfig(
             language=language,
-            input_case=input_case or "cased",
+            input_case=input_case or "lower_cased",
             cache_dir=effective_cache_dir,
             overwrite_cache=overwrite_cache,
             whitelist=whitelist,
             cache_search_dirs=search_dirs,
+        )
+        scoped = categorized_nemo_cache_layout(
+            NemoCacheLayout(effective_cache_dir, tuple(search_dirs)),
+            language,
+            "itn",
+            "direct",
+            direct_itn_cache_fingerprint(base_config),
+        )
+        return get_nemo_direct_itn_engine(
+            NemoDirectItnConfig(
+                language=language,
+                input_case=input_case or "lower_cased",
+                cache_dir=scoped.write_dir,
+                overwrite_cache=overwrite_cache,
+                whitelist=whitelist,
+                cache_search_dirs=scoped.read_dirs,
+                cache_root_dir=effective_cache_dir,
+                cache_root_search_dirs=tuple(search_dirs),
+            )
+        )
+    base_config = NemoDirectTnConfig(
+        language=language,
+        input_case=input_case or "cased",
+        cache_dir=effective_cache_dir,
+        overwrite_cache=overwrite_cache,
+        whitelist=whitelist,
+        cache_search_dirs=search_dirs,
+    )
+    scoped = categorized_nemo_cache_layout(
+        NemoCacheLayout(effective_cache_dir, tuple(search_dirs)),
+        language,
+        "tn",
+        "direct",
+        direct_tn_cache_fingerprint(base_config),
+    )
+    return get_nemo_direct_tn_engine(
+        NemoDirectTnConfig(
+            language=language,
+            input_case=input_case or "cased",
+            cache_dir=scoped.write_dir,
+            overwrite_cache=overwrite_cache,
+            whitelist=whitelist,
+            cache_search_dirs=scoped.read_dirs,
+            cache_root_dir=effective_cache_dir,
+            cache_root_search_dirs=tuple(search_dirs),
         )
     )

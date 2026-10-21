@@ -22,11 +22,23 @@ import sys
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Type
 
 
-# Keep the default cache under the repo so cwd changes do not create extra FAR copies.
-DEFAULT_NEMO_CACHE_DIR = str(
-    Path(__file__).resolve().parents[2] / ".cache" / "nemo"
-)
-USER_NEMO_CACHE_RELATIVE = Path(".cache") / "text_normalization" / "nemo"
+def _cache_namespace() -> str:
+    """Use a separate default cache root for the public XNorm distribution."""
+
+    try:
+        from ..distribution import get_distribution_policy
+
+        if get_distribution_policy().public_build:
+            return "xnorm"
+    except Exception:
+        pass
+    return "text_normalization"
+
+
+# Keep generated artifacts in the user cache; configured cluster caches are read-only sources.
+DEFAULT_NEMO_CACHE_DIR = str(Path.home() / ".cache" / _cache_namespace() / "nemo")
+NEMO_CACHE_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "nemo_cache.json"
+USER_NEMO_CACHE_RELATIVE = Path(".cache") / _cache_namespace() / "nemo"
 NEMO_BACKENDS = frozenset({"official", "direct"})
 
 
@@ -38,8 +50,59 @@ class NemoCacheLayout:
     read_dirs: Tuple[str, ...]
 
 
+def fingerprinted_nemo_cache_layout(
+    layout: NemoCacheLayout,
+    language: str,
+    fingerprint: str,
+) -> NemoCacheLayout:
+    """Isolate one language and grammar fingerprint while preserving public read-only roots."""
+
+    def scoped(root: str) -> str:
+        return str(Path(root) / language / fingerprint)
+
+    return NemoCacheLayout(
+        write_dir=scoped(layout.write_dir),
+        read_dirs=tuple(dict.fromkeys(scoped(root) for root in layout.read_dirs)),
+    )
+
+
+def categorized_nemo_cache_layout(
+    layout: NemoCacheLayout,
+    language: str,
+    direction: str,
+    backend: str,
+    fingerprint: str,
+) -> NemoCacheLayout:
+    """Separate language, direction, backend, and grammar fingerprint."""
+
+    def scoped(root: str) -> str:
+        return str(Path(root) / language / direction / backend / fingerprint)
+
+    return NemoCacheLayout(
+        write_dir=scoped(layout.write_dir),
+        read_dirs=tuple(dict.fromkeys(scoped(root) for root in layout.read_dirs)),
+    )
+
+
 def user_nemo_cache_dir() -> Path:
     return Path.home() / USER_NEMO_CACHE_RELATIVE
+
+
+def configured_nemo_cache_dirs() -> Tuple[Path, ...]:
+    """Load private cluster cache roots without making deployment paths part of the public export."""
+
+    try:
+        data = json.loads(NEMO_CACHE_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    values = data.get("public_cache_dirs", []) if isinstance(data, dict) else []
+    if not isinstance(values, list):
+        return ()
+    return tuple(
+        Path(value).expanduser()
+        for value in values
+        if isinstance(value, str) and value.strip()
+    )
 
 
 def cache_directory_is_writable(path: Path) -> bool:
@@ -69,21 +132,22 @@ def resolve_nemo_cache_layout(
     shared_dir: Optional[str] = None,
     user_dir: Optional[str] = None,
 ) -> NemoCacheLayout:
-    """Explicit paths win; use the repo cache if writable, otherwise the user dir while read-only-reusing the repo."""
+    """Use configured public caches for reads and the user cache as the only default write target."""
 
     if explicit:
         write = str(Path(explicit).expanduser())
         return NemoCacheLayout(write_dir=write, read_dirs=(write,))
-    shared = Path(shared_dir or DEFAULT_NEMO_CACHE_DIR)
-    if cache_directory_is_writable(shared):
-        write = str(shared)
-        return NemoCacheLayout(write_dir=write, read_dirs=(write,))
-    user = Path(user_dir) if user_dir is not None else user_nemo_cache_dir()
-    ordered = [str(user)]
-    if cache_directory_is_readable(shared):
-        ordered.append(str(shared))
-    unique = tuple(dict.fromkeys(ordered))
-    return NemoCacheLayout(write_dir=str(user), read_dirs=unique)
+    public_dirs = (
+        (Path(shared_dir).expanduser(),)
+        if shared_dir
+        else configured_nemo_cache_dirs()
+    )
+    user = Path(user_dir).expanduser() if user_dir is not None else user_nemo_cache_dir()
+    ordered = [
+        str(path) for path in public_dirs if cache_directory_is_readable(path)
+    ]
+    ordered.append(str(user))
+    return NemoCacheLayout(write_dir=str(user), read_dirs=tuple(dict.fromkeys(ordered)))
 
 # This list is the official 1.2.0 TN packs wrapped by this project.
 # The release includes rw, but 1.2.0 Normalizer raises KeyError: verbalize; this project does not wrap it.
@@ -278,8 +342,16 @@ def locked_nemo_cache(lock_path: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(os.fspath(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        # LOCK_EX waits: later jobs read a finished FAR instead of compiling in parallel.
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        # 先探测再阻塞，避免多个 warmup 进程等待时完全没有可见反馈。
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(
+                f"waiting for cache lock: {lock_path}",
+                file=sys.stderr,
+                flush=True,
+            )
+            fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
@@ -979,52 +1051,85 @@ def initialize_nemo_engine(
     if not itn and uses_private_ru_tn(language):
         # Private ru is not in nemo_direct.py: official=whole-sentence ClassifyFst, direct=Python fast path.
         effective_input_case = input_case or "cased"
-        config = NemoNormalizerConfig(
-            language="ru",
-            input_case=effective_input_case,
-            cache_dir=layout.write_dir,
-            overwrite_cache=overwrite_cache,
-            whitelist=whitelist,
-            cache_search_dirs=layout.read_dirs,
-        )
         if backend == "direct":
             ru_direct = _load_private_ru_direct_module()
-            return ru_direct.initialize_private_ru_direct_engine(config)
-        ru_module = _load_private_ru_tn_module()
-        return ru_module.initialize_private_ru_tn_engine(config)
-    if backend == "direct":
-        direct_module = _load_private_direct_module()
-        if direct_module.supports_direct(language, itn):
-            engine = direct_module.initialize_direct_nemo_engine(
-                language=language,
-                input_case=input_case,
-                cache_dir=layout.write_dir,
-                overwrite_cache=overwrite_cache,
-                whitelist=whitelist,
-                itn=itn,
-                cache_search_dirs=layout.read_dirs,
-            )
-            return _maybe_wrap_overlay_tn_engine(engine, language, itn)
-
-    effective_input_case = input_case or ("lower_cased" if itn else "cased")
-    if itn:
-        return get_nemo_itn_engine(
-            NemoInverseNormalizerConfig(
-                language=language,
+            config = NemoNormalizerConfig(
+                language="ru",
                 input_case=effective_input_case,
                 cache_dir=layout.write_dir,
                 overwrite_cache=overwrite_cache,
                 whitelist=whitelist,
                 cache_search_dirs=layout.read_dirs,
             )
+            return ru_direct.initialize_private_ru_direct_engine(config)
+        ru_module = _load_private_ru_tn_module()
+        fingerprint_fn = getattr(ru_module, "private_ru_tn_cache_fingerprint", None)
+        scoped_layout = (
+            categorized_nemo_cache_layout(
+                layout, "ru", "tn", "official", fingerprint_fn(effective_input_case)
+            )
+            if fingerprint_fn is not None
+            else layout
         )
+        config = NemoNormalizerConfig(
+            language="ru",
+            input_case=effective_input_case,
+            cache_dir=scoped_layout.write_dir,
+            overwrite_cache=overwrite_cache,
+            whitelist=whitelist,
+            cache_search_dirs=scoped_layout.read_dirs,
+        )
+        return ru_module.initialize_private_ru_tn_engine(config)
+    if backend == "direct":
+        direct_module = _load_private_direct_module()
+        if not direct_module.supports_direct(language, itn):
+            raise NemoLanguageNotSupportedError(
+                f"direct {'ITN' if itn else 'TN'} does not support language {language!r}"
+            )
+        engine = direct_module.initialize_direct_nemo_engine(
+            language=language,
+            input_case=input_case,
+            cache_dir=layout.write_dir,
+            overwrite_cache=overwrite_cache,
+            whitelist=whitelist,
+            itn=itn,
+            cache_search_dirs=layout.read_dirs,
+        )
+        return _maybe_wrap_overlay_tn_engine(engine, language, itn)
+
+    effective_input_case = input_case or ("lower_cased" if itn else "cased")
+    if itn:
+        effective_input_case = input_case or "lower_cased"
+        fingerprint = official_cache_fingerprint(
+            language, "itn", effective_input_case, whitelist
+        )
+        scoped_layout = categorized_nemo_cache_layout(
+            layout, language, "itn", "official", fingerprint
+        )
+        return get_nemo_itn_engine(
+            NemoInverseNormalizerConfig(
+                language=language,
+                input_case=effective_input_case,
+                cache_dir=scoped_layout.write_dir,
+                overwrite_cache=overwrite_cache,
+                whitelist=whitelist,
+                cache_search_dirs=scoped_layout.read_dirs,
+            )
+        )
+    effective_input_case = input_case or "cased"
+    fingerprint = official_cache_fingerprint(
+        language, "tn", effective_input_case, whitelist
+    )
+    scoped_layout = categorized_nemo_cache_layout(
+        layout, language, "tn", "official", fingerprint
+    )
     config = NemoNormalizerConfig(
         language=language,
         input_case=effective_input_case,
-        cache_dir=layout.write_dir,
+        cache_dir=scoped_layout.write_dir,
         overwrite_cache=overwrite_cache,
         whitelist=whitelist,
-        cache_search_dirs=layout.read_dirs,
+        cache_search_dirs=scoped_layout.read_dirs,
     )
     return _maybe_wrap_overlay_tn_engine(get_nemo_engine(config), language, False)
 

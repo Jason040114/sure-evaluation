@@ -8,7 +8,7 @@ implementation: sure_eval.evaluation.nodes.normalization.xnorm.node
 runtime: node_local_optional
 package:
   name: xnorm
-  version: 1.5.0
+  version: 1.6.0
   source: bundled
   license: Apache-2.0
 profiles:
@@ -33,5 +33,5 @@ profiles:
   vi: {language: vi, direction: tn}
   zh: {language: zh, direction: tn}
 notes:
-  - XNorm source is bundled unchanged under xnorm_vendor; this node only adapts SURE key-text files.
-  - The default direct backend requires opencc-python-reimplemented==0.1.7.
+  - XNorm 1.6.0 source is bundled unchanged under xnorm_vendor; this node only adapts SURE key-text files.
+  - The bundled source is limited to the xnorm Python package and its runtime data; environments and caches are not committed.

@@ -18,7 +18,7 @@ from sure_eval.evaluation.nodes.common.node_local_python import (
 
 NODE_ID = "normalization/xnorm"
 NODE_VERSION = "v1"
-XNORM_VERSION = "1.5.0"
+XNORM_VERSION = "1.6.0"
 XNORM_LICENSE = "Apache-2.0"
 NODE_DIR = Path(__file__).resolve().parent
 _RUNTIME_ROOT = NODE_DIR / "xnorm_vendor"

@@ -6,7 +6,7 @@ import codecs,os,sys,io
 import argparse
 import unicodedata
 import re
-from .distribution import default_nemo_backend
+from .distribution import default_nemo_backend, get_distribution_policy
 from .logger import logger
 from .utils import replace_invisible_chars, simple_parse_pattern, simple_pattern_difference
 from .numbers.spans import rewrite_number_spans
@@ -192,6 +192,7 @@ class TextNormalization_Base:
         self.nemo_overwrite_cache = False
         self.nemo_whitelist = None
         self._nemo_engine = None
+        self._latin_ampersand_rewriter = None
         # Code-switch tag policy defaults come from mode; explicit user values win.
         self.code_switch_tag = None
 
@@ -303,6 +304,18 @@ class TextNormalization_Base:
             raise ValueError("nemo_itn_input_case must be cased or lower_cased")
 
         self.init_regex_patterns()
+
+        # Compile the private English-fragment rule before the line loop.
+        self._latin_ampersand_rewriter = None
+        if (
+            self.normalize_text
+            and not self.itn
+            and self.script != "Latin"
+            and not get_distribution_policy().public_build
+        ):
+            from .rule_engines.nemo_overlay import rewrite_latin_ampersands
+
+            self._latin_ampersand_rewriter = rewrite_latin_ampersands
 
         # Restore FARs for official languages before the line loop; the hot path only infers.
         self._nemo_engine = None
@@ -607,6 +620,8 @@ class TextNormalization_Base:
         # NFKC normalization
         if not text: return text
         text = fun_normalize_nfkc(text, debug=self.debug)
+        if self._latin_ampersand_rewriter is not None:
+            text = self._latin_ampersand_rewriter(text)
 
         # Normalize bad quotes inside words
         if not text: return text
@@ -737,26 +752,7 @@ class TextNormalization_Base:
             raise
         except Exception as exc:
             if self.nemo_backend == "direct":
-                logger.warning(
-                    "direct graph build failed, falling back to official: %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
-                self.nemo_backend = "official"
-                kwargs["backend"] = "official"
-                try:
-                    self._nemo_engine = initialize_nemo_engine(**kwargs)
-                    return
-                except NemoDependencyError:
-                    raise
-                except Exception as official_exc:
-                    logger.warning(
-                        "official NeMo init failed, skipping NeMo: %s: %s",
-                        type(official_exc).__name__,
-                        official_exc,
-                    )
-                    self._nemo_engine = None
-                    return
+                raise
             logger.warning(
                 "NeMo init failed, skipping NeMo: %s: %s",
                 type(exc).__name__,

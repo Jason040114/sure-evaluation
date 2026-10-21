@@ -1,6 +1,6 @@
 # XNorm normalization node
 
-This node adapts the bundled XNorm 1.5.0 multilingual normalizer to SURE
+This node adapts the bundled XNorm 1.6.0 multilingual normalizer to SURE
 key-text files. The XNorm source is kept unchanged under `xnorm_vendor/`.
 
 Supported profiles are `ar`, `de`, `en`, `es`, `fr`, `he`, `hi`, `hu`, `hy`,

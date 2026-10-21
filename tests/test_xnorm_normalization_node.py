@@ -89,6 +89,7 @@ def test_xnorm_key_text_adapter_preserves_keys_and_trace(tmp_path: Path) -> None
     )
     assert trace.node_id == "normalization/xnorm"
     assert trace.details["language"] == "id"
+    assert trace.details["xnorm_version"] == "1.6.0"
     assert trace.details["row_counts"] == {"ref": 1, "hyp": 1}
 
     Path(normalized.ref_file).unlink()
@@ -101,6 +102,7 @@ def test_xnorm_manifest_declares_profiles() -> None:
 
     manifest, _ = load_node_manifest("normalization/xnorm")
     assert manifest["runtime"] == "node_local_optional"
+    assert manifest["package"]["version"] == "1.6.0"
     assert set(manifest["profiles"]) == {
         "ar",
         "de",
